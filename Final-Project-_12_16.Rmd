@@ -1,0 +1,452 @@
+---
+title: "Final Project BUS 696: Hotel Booking Demand"
+author: "Brian Chun, Savin Damkar, Hasnu Kwatra"
+date: "12/16/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library('here')
+library('tidyverse')
+library("readr")
+library("rsample")
+library("ggplot2")
+library("ggridges")
+library('glmnet')
+library('glmnetUtils')
+library('forcats')
+library('coefplot')
+library('plotROC')
+library("yardstick")
+library("sjPlot")
+library("partykit")
+library("tidyverse")
+library("PerformanceAnalytics")
+library("rpart")       
+library("rpart.plot")  
+library('randomForest')
+library("rsample")
+library('dplyr')
+library('plotROC')
+library('glmnet')
+library('glmnetUtils')
+library('forcats')
+library('coefplot')
+library('fs')
+library('here')
+library('ISLR')
+library('yardstick')
+library('randomForest')
+library('partykit')
+library('visNetwork')
+library('sparkline')
+library('randomForestExplainer')
+library('lime')
+
+options(scipen = 50)
+set.seed(23)
+```
+
+
+```{r}
+hotels <- read.csv("C:\\Users\\sndam\\OneDrive\\Desktop\\BUS 696\\datasets\\hotel_bookings.csv")
+
+
+dim(hotels)
+
+names(hotels)
+
+
+hotels <- hotels %>% 
+  na.omit()
+
+glimpse(hotels)
+```
+
+```{r}
+##We were considering using all other variables, but in our analysis we thought some of them could provide multicollinearity (see reservation status,arrival date week, previous booking not canceled, etc),and others did not seem to matter much (agent and company).
+
+hotels_clean <- hotels %>% 
+        mutate(hotel = as.factor(hotel),
+         country = as.factor(country),
+         is_canceled = as.factor(is_canceled),
+         is_repeated_guest = as.factor(is_repeated_guest),
+         market_segment = as.factor(market_segment),
+         reserved_room_type = as.factor(reserved_room_type),
+         assigned_room_type = as.factor(assigned_room_type),
+         deposit_type = as.factor(deposit_type),
+         meal = as.factor(meal),
+         arrival_date_month = as.factor(arrival_date_month),
+         customer_type = as.factor(customer_type))%>% 
+        mutate(country = fct_lump(country, n = 4),
+         market_segment = fct_lump(market_segment, n = 3),
+         reserved_room_type= fct_lump(reserved_room_type, n = 3 ),
+         assigned_room_type = fct_lump(assigned_room_type, n = 3 ),
+         customer_type = fct_lump(customer_type, n = 3),
+         arrival_date_month =fct_lump(arrival_date_month,n = 3))%>% 
+        select(is_canceled,hotel, lead_time,country,
+                market_segment,is_repeated_guest,previous_cancellations,
+                reserved_room_type,assigned_room_type, meal,
+                booking_changes,deposit_type,customer_type,total_of_special_requests,
+                adr,arrival_date_month,adults,children,babies,required_car_parking_spaces)
+
+
+
+levels(hotels_clean$is_canceled) <- c("Not Cancelled", "Cancelled")
+
+
+train_prop <- .80
+
+hotel_split <- initial_split(data = hotels_clean, prop = train_prop)
+
+train <- training(hotel_split)
+
+test  <- testing(hotel_split)
+
+            
+```
+
+```{r}
+
+glimpse(train)
+
+levels(train$country)
+levels(train$reserved_room_type)
+levels(train$is_canceled)
+
+ggplot(data=train, aes(x=deposit_type))+geom_bar(fill = "black")+xlab("Not Cancelled vs Cancelled")+ylab("Proportion")+ggtitle("Deposit Type Distribution")+facet_wrap(~is_canceled)
+
+ggplot(data = train, aes(x=country))+geom_bar(fill = "black") +xlab("Country")+ylab("Count")+ggtitle("Country Distribution")
+
+
+##We wanted to make plots showing how the data was distributed, we thought the deposit type and country breakdowns would be prominent. 
+```
+
+
+
+```{r}
+##For our initial logistic regression, we felt it best to pick variables we thought mattered most. We realize other variables may be important, but we wanted to stick with these first to create a relatively simple model. 
+
+
+logit_hotel <- glm(is_canceled ~hotel+lead_time+country+
+                market_segment+is_repeated_guest+previous_cancellations+
+                reserved_room_type+booking_changes+
+                deposit_type+total_of_special_requests,
+                data = train, family = binomial)
+
+summary(logit_hotel)
+
+exp(logit_hotel$coefficients)
+
+```
+```{r}
+
+##Even though we ran our initial logistic models, we wanted to make ones with fewer variables, only to understand P-Values and coefficients of the variables more. We were potentially thinking of using these to predict, as well, but other models took more priority.
+
+logit_hotel1 <- glm(is_canceled ~ hotel + lead_time + market_segment + total_of_special_requests, data = train, family = binomial)
+
+summary(logit_hotel1)
+
+
+```
+
+```{r}
+logit_hotel2 <- glm(is_canceled ~ hotel + lead_time + booking_changes + total_of_special_requests, data = train, family = binomial)
+
+summary(logit_hotel2)
+```
+```{r}
+logit_hotel3 <- glm(is_canceled ~ hotel + lead_time + booking_changes + deposit_type + previous_cancellations, data = train, family = binomial)
+
+summary(logit_hotel3)
+```
+```{r}
+logit_hotel4 <- glm(is_canceled ~ hotel + lead_time + market_segment + previous_cancellations, data = train, family = binomial)
+
+summary(logit_hotel4)
+```
+
+
+```{r}
+##While the logistic models seemed simple and potentially sufficient for a model, we wanted to insure that we were applying other models as well. Although there are more advanced techniques, we first ran a ridge model, followed by lasso and ElasticNet models to get a better understanding of how to best regularize our data. From our perspective, this ridge model didn't really work, as we would have to hava really low lambda, which doesn't really allow us to regularize that much. Furthermore, it doesn't really show us that the importance of variables nor allow feature selection. 
+
+ridge_mod <- cv.glmnet(is_canceled ~hotel+lead_time+country+
+                market_segment+is_repeated_guest+previous_cancellations+
+                reserved_room_type+booking_changes+
+                deposit_type+total_of_special_requests,
+                       data = train,
+                       family = "binomial",
+                       alpha = 0)
+
+print(ridge_mod)
+
+plot(ridge_mod)
+```
+
+```{r}
+lasso_mod <- cv.glmnet(is_canceled ~hotel+lead_time+country+
+                market_segment+is_repeated_guest+previous_cancellations+
+                reserved_room_type+booking_changes+
+                deposit_type+total_of_special_requests, 
+                data = train,
+                family = "binomial",
+                alpha = 1)
+
+print(lasso_mod)
+
+plot(lasso_mod)
+```
+
+
+```{r}
+enet_mod <- cva.glmnet(is_canceled ~hotel+lead_time+country+
+                market_segment+is_repeated_guest+previous_cancellations+
+                reserved_room_type+booking_changes+
+                deposit_type+total_of_special_requests,
+                       data = train,
+                       family = "binomial",
+                       alpha = seq(0,1, by = 0.10))
+minlossplot(enet_mod, 
+            cv.type = "min")
+```
+
+```{r}
+get_alpha <- function(fit) {
+  alpha <- fit$alpha
+  error <- sapply(fit$modlist, 
+                  function(mod) {min(mod$cvm)})
+  alpha[which.min(error)]
+}
+
+best_alpha <- get_alpha(enet_mod)
+
+print(best_alpha)
+
+##From this alpha, we can tell the lasso model would work better. This actually makes more sense, as we can see the lambda (our coefficient for regularization) is higher, which allows us to apply more regularization. Furthermore, with the lasso model, we can reduce certain coefficients to zero, which tells us that that some of the variables matter very little in our context. While these models were useful, we wanted to utilize these for predictions, but we also thought it best to explore other models before doing so. Furthermore, we can still apply regularization to our models while minimizing the binomial deviance.
+```
+
+
+```{r}
+library(data.table)
+coefs <- data.table(varnames = rownames(coef(ridge_mod, s = "lambda.min")), 
+                    ridge_lambda_min = as.matrix(coef(ridge_mod,
+                                                      s = "lambda.min")), 
+                    lasso_lambda_min = as.matrix(coef(lasso_mod, s = "lambda.min")))
+
+print(coefs)
+```
+
+
+```{r}
+
+##Before we used other models for predictions, we wanted to stick with something simple,so we used the logistic model.
+
+result_train <- predict.glm(logit_hotel, newdata = train, type = "response")
+
+result_test <- predict.glm(logit_hotel, newdata = test, type = "response")
+
+```
+
+
+```{r}
+train_result_df <- data.frame(
+  `truth` = as.numeric(train$is_canceled),
+  `Class1` = as.numeric(result_train))
+
+test_result_df <- data.frame(
+  `truth` = as.numeric(test$is_canceled),
+  `Class1` = as.numeric(result_test))
+
+print(train_result_df)
+print(test_result_df)
+
+```
+
+
+```{r}
+#Here we are making ROC curves to provide us a visualization for the performance of our logistic model. 
+
+ROC_train <- ggplot(train_result_df, 
+                    aes(m = Class1, d = truth)) + 
+  geom_roc(labelsize = 3.5, 
+           cutoffs.at = c(0.99,0.9,0.7,0.5,0.3,0.1,0)) +ggtitle("ROC Train")
+
+ROC_test <- ggplot(test_result_df, 
+                   aes(m = Class1, d = truth)) + 
+  geom_roc(labelsize = 3.5, 
+           cutoffs.at = c(0.99,0.9,0.7,0.5,0.3,0.1,0)) + ggtitle("ROC Test")
+
+print(ROC_train)
+
+print(ROC_test)
+```
+
+```{r}
+calc_auc(ROC_train)
+
+##With our AUC of ~.86, we thought our model was decent enough for a starting point. Obviously, we want the area under the curve to be as close to 1 as possible, but for a first attempt, we were satisfied. 
+```
+
+```{r}
+calc_auc(ROC_test)
+```
+
+```{r}
+results_logit <- data.frame(
+  `truth` = as.factor(test$is_canceled),
+  `Class1` =  result_test,
+  `Class2` = 1 - result_test,
+  `predicted` = as.factor(ifelse(result_test > .50, "Cancelled", "Not Cancelled")))
+
+levels(results_logit$truth)
+levels(results_logit$predicted)
+
+results_logit$predicted <- relevel(results_logit$predicted, "Not Cancelled")
+
+cm <- conf_mat(results_logit,
+               truth = truth,
+               estimate = predicted)
+
+print(cm)
+summary(cm)
+
+##Our confusion matrix gave us results that we thought were interesting. Our sensitivity was quite high at ~91%, although our specificity was quite low at ~57%. For our purposes, we felt that this made sense because we want to know when people will cancel. Although it would be helpful for us to know when they wouldn't cancel, knowing the factors that lead to cancellation and having a model to predict cancellation accurately seemed possible with this model. Furthermore, our accuracy, precision, recall, and f-measure all seemed high enough as starting place. Ideally, we would be able to run further models to achieve a more balanced approach. 
+
+```
+
+```{r}
+
+##We wanted to run a random forest for the variables we had initially thought to be the most important, but we also ran a random forest with all other variables in an effort to understand their importance. Here we are optimizing the mtry value.  
+
+ rf_mods <- list()
+  oob_err <- NULL
+  test_err <- NULL
+  for(mtry in 1:10){
+   rf_fit <- randomForest(as.factor(is_canceled) ~ 
+                          hotel+lead_time+country+
+                          market_segment+is_repeated_guest+
+                          previous_cancellations+reserved_room_type+
+                          booking_changes+deposit_type+
+                          total_of_special_requests, 
+                          data = train,
+                          type = classification,
+                          na.action = na.omit,
+                      localImp = TRUE,
+                       mtry = mtry,
+                       ntree = 200)  
+    oob_err[mtry] <- rf_fit$err.rate[200]
+    
+    cat(mtry," ")
+  }
+  
+  results_DF <- data.frame(mtry = 1:10, oob_err)
+  ggplot(results_DF, aes(x = mtry, y = oob_err)) + geom_point() + theme_minimal()
+
+
+
+
+```
+```{r}
+##Given that we found the optimum mtry value to be approximately 6, we stuck with stuck for this random forest. 
+
+rf_fit2 <- randomForest(as.factor(is_canceled) ~ 
+                          hotel+lead_time+country+
+                          market_segment+is_repeated_guest+
+                          previous_cancellations+reserved_room_type+
+                          booking_changes+deposit_type+
+                          total_of_special_requests, 
+                          data = train,
+                          type = classification,
+                          na.action = na.omit,
+                      localImp = TRUE,
+                       mtry = 6,
+                       ntree = 200)  
+  
+
+plot(rf_fit2)
+
+varImpPlot(rf_fit2)
+
+
+plot_min_depth_distribution(rf_fit2)
+
+# 
+plot_multi_way_importance(rf_fit2, 
+                          size_measure = "no_of_nodes")
+
+
+explain_forest(rf_fit2, 
+               interactions = TRUE, 
+               data = train)
+```
+
+
+```{r}
+
+##Here we are trying to find the optimum mtry value for the random forest with all the variables of the hotels_clean dataset. 
+
+rf_mods <- list()
+  oob_err <- NULL
+  test_err <- NULL
+  for(mtry in 1:18){
+   rf_fit <- randomForest(as.factor(is_canceled) ~ 
+                          ., 
+                          data = hotels_clean,
+                          type = classification,
+                          na.action = na.omit,
+                      localImp = TRUE,
+                       mtry = mtry,
+                       ntree = 200)  
+    oob_err[mtry] <- rf_fit$err.rate[200]
+    
+    cat(mtry," ")
+  }
+  
+  results_DF <- data.frame(mtry = 1:19, oob_err)
+  ggplot(results_DF, aes(x = mtry, y = oob_err)) + geom_point() + theme_minimal()
+
+
+
+```
+
+```{r}
+
+##In our results, we thought 10 appeared to be the optimum mtry, so we used that. 
+
+rf_fit3 <- randomForest(as.factor(is_canceled) ~ ., 
+                          data = hotels_clean,
+                          type = classification,
+                          na.action = na.omit,
+                      localImp = TRUE,
+                       mtry = 10,
+                       ntree = 200)  
+
+plot(rf_fit3)
+
+varImpPlot(rf_fit3)
+
+
+plot_min_depth_distribution(rf_fit3)
+
+# 
+plot_multi_way_importance(rf_fit3, 
+                          size_measure = "no_of_nodes")
+
+
+
+explain_forest(rf_fit3,
+               interactions = TRUE,
+               data = hotels_clean)
+
+
+
+```
+
+
+
+
+
