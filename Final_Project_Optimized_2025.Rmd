@@ -283,3 +283,5 @@ explanations <- explain(test_sample, explainer_rf, n_features = 5)
 # Visualize feature contributions for each observation
 plot_features(explanations) +
   ggtitle("LIME Feature Contributions for Selected Test Bookings")
+
+```
